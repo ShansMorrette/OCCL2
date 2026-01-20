@@ -1725,34 +1725,36 @@ function initUI() {
             }
 
             // 2. Agrupar Ventas
-            const salesByDayAndEntity = {};
-            const uniqueDates = new Set();
+            const salesByTimeAndEntity = {};
+            const uniqueTimeKeys = new Set();
 
             if (sortedSales.length === 0) {
                 poolData.push({ x: new Date().getTime(), y: currentPool });
             } else {
                 sortedSales.forEach(s => {
-                    const dateStr = new Date(s.date).toISOString().split('T')[0];
-                    uniqueDates.add(dateStr);
+                    const date = new Date(s.date);
+                    // Agregación por hora: YYYY-MM-DDTHH
+                    const timeKey = date.toISOString().slice(0, 13);
+                    uniqueTimeKeys.add(timeKey);
 
-                    if (!salesByDayAndEntity[dateStr]) salesByDayAndEntity[dateStr] = {};
+                    if (!salesByTimeAndEntity[timeKey]) salesByTimeAndEntity[timeKey] = {};
 
                     // Asignar a ID de socio O 'global'
                     const entityId = s.partnerId ? s.partnerId : 'global';
 
-                    if (!salesByDayAndEntity[dateStr][entityId]) salesByDayAndEntity[dateStr][entityId] = 0;
-                    salesByDayAndEntity[dateStr][entityId] += (s.amount || 0);
+                    if (!salesByTimeAndEntity[timeKey][entityId]) salesByTimeAndEntity[timeKey][entityId] = 0;
+                    salesByTimeAndEntity[timeKey][entityId] += (s.amount || 0);
                 });
 
-                const sortedDates = Array.from(uniqueDates).sort((a, b) => new Date(a) - new Date(b));
+                const sortedTimeKeys = Array.from(uniqueTimeKeys).sort((a, b) => new Date(a) - new Date(b));
 
-                sortedDates.forEach(date => {
-                    const timestamp = new Date(date).getTime();
+                sortedTimeKeys.forEach(timeKey => {
+                    const timestamp = new Date(timeKey).getTime();
                     poolData.push({ x: timestamp, y: currentPool });
 
-                    const daySales = salesByDayAndEntity[date];
+                    const hourSales = salesByTimeAndEntity[timeKey];
                     Object.keys(partnerSeriesMap).forEach(key => {
-                        const amount = daySales[key] || 0;
+                        const amount = hourSales[key] || 0;
                         if (amount > 0) {
                             partnerSeriesMap[key].data.push({ x: timestamp, y: amount });
                         }
@@ -1790,7 +1792,7 @@ function initUI() {
                         formatter: function (val) {
                             if (typeof val === 'number' && val > 1000000000000) {
                                 const d = new Date(val);
-                                return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
+                                return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }) + ' ' + d.getHours() + ':00h';
                             }
                             return val;
                         },
@@ -1798,7 +1800,7 @@ function initUI() {
                     }
                 },
                 tooltip: {
-                    x: { format: 'dd MMM yyyy' },
+                    x: { format: 'dd MMM yyyy, HH:mm' },
                     theme: 'dark'
                 },
                 yaxis: [
