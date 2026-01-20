@@ -1698,7 +1698,9 @@ function initUI() {
         if (window.mainChartInstance) {
             // Datos Reales: Desglose por Socio Y Global
             const currentPool = getTotalCoins();
-            const sortedSales = [...sales].sort((a, b) => new Date(a.date) - new Date(b.date));
+            const sortedSales = [...sales]
+                .filter(s => s.date && !isNaN(new Date(s.date).getTime()))
+                .sort((a, b) => new Date(a.date) - new Date(b.date));
             const poolData = [];
 
             // 1. Inicializar Mapa de Series
@@ -1749,7 +1751,8 @@ function initUI() {
                 const sortedTimeKeys = Array.from(uniqueTimeKeys).sort((a, b) => new Date(a) - new Date(b));
 
                 sortedTimeKeys.forEach(timeKey => {
-                    const timestamp = new Date(timeKey).getTime();
+                    // Añadir sufijo UTC para asegurar parsing correcto en todos los navegadores
+                    const timestamp = new Date(timeKey + ':00:00Z').getTime();
                     poolData.push({ x: timestamp, y: currentPool });
 
                     const hourSales = salesByTimeAndEntity[timeKey];
