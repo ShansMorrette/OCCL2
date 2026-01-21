@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCC L2 | Inventario</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body class="bg-[#0a0b10] text-[#e2e8f0]">
+
+    <!-- Mobile Menu Button -->
+    <button id="mobile-menu-btn" class="md:hidden fixed top-4 left-4 z-[60] p-3 glass rounded-lg">
+        <i data-lucide="menu" class="w-6 h-6 text-[#00f2ff]"></i>
+    </button>
+
+    <!-- Terminal Sidebar -->
+    <aside id="sidebar" class="sidebar glass p-6 hidden md:flex flex-col gap-8">
+        <div class="flex items-center gap-3">
+            <i data-lucide="wallet" class="text-[#00f2ff] w-8 h-8"></i>
+            <h1 class="text-xl font-bold tracking-tighter neon-text-cyan">OCC LINEAGE II</h1>
+        </div>
+
+        <nav class="flex flex-col gap-6 mt-10" id="sidebar-nav">
+            <a href="index.html"
+                class="flex items-center gap-4 text-sm font-medium hover:text-[#00f2ff] transition-colors group">
+                <i data-lucide="layout-dashboard" class="w-5 h-5 group-hover:scale-110 transition-transform"></i>
+                RESUMEN
+            </a>
+            <a href="simulador.html"
+                class="flex items-center gap-4 text-sm font-medium hover:text-[#00f2ff] transition-colors group">
+                <i data-lucide="activity" class="w-5 h-5 group-hover:scale-110 transition-transform"></i>
+                SIMULADOR
+            </a>
+            <a href="socios.html"
+                class="flex items-center gap-4 text-sm font-medium hover:text-[#00f2ff] transition-colors group">
+                <i data-lucide="users" class="w-5 h-5 group-hover:scale-110 transition-transform"></i>
+                SOCIOS
+            </a>
+            <a href="templates.html"
+                class="flex items-center gap-4 text-sm font-medium hover:text-[#00f2ff] transition-colors group">
+                <i data-lucide="message-square" class="w-5 h-5 group-hover:scale-110 transition-transform"></i>
+                PLANTILLAS
+            </a>
+            <a href="ventas.html"
+                class="flex items-center gap-4 text-sm font-medium hover:text-[#00f2ff] transition-colors group">
+                <i data-lucide="trending-down" class="w-5 h-5 group-hover:scale-110 transition-transform"></i>
+                VENTAS
+            </a>
+            <a href="inventario.html"
+                class="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-white/5 transition-all group text-[#00f2ff]">
+                <i data-lucide="package" class="w-5 h-5 group-hover:text-[#00f2ff]"></i>
+                <span class="text-sm font-medium">Inventario</span>
+            </a>
+            <a href="configuracion.html"
+                class="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-white/5 transition-all group">
+                <i data-lucide="settings" class="w-5 h-5 group-hover:text-[#00f2ff]"></i>
+                <span
+                    class="text-sm font-medium text-zinc-500 group-hover:text-white transition-colors">Configuración</span>
+            </a>
+        </nav>
+
+        <div class="mt-auto pt-6 border-t border-white/10">
+            <div class="flex items-center gap-3 glass p-4 rounded-lg">
+                <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-[#00f2ff] to-[#ff00ff]"></div>
+                <div>
+                    <p class="text-xs font-bold">L2_USER</p>
+                    <p class="text-[10px] text-zinc-500">TERMINAL ACTIVE</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <header class="flex justify-between items-center mb-10">
+            <div>
+                <h2 class="text-3xl font-bold tracking-tight uppercase text-white">INVENTARIO</h2>
+                <p class="text-zinc-500 text-sm tracking-widest">INVENTORY MANAGEMENT MODULE V2.0</p>
+            </div>
+            <div
+                class="glass px-4 py-2 flex items-center gap-2 rounded-lg border border-[#00f2ff]/20 shadow-[0_0_15px_rgba(0,242,255,0.1)]">
+                <span class="w-2 h-2 rounded-full bg-[#00f2ff] animate-pulse"></span>
+                <span id="ticker-price" class="text-xs font-bold uppercase text-[#00f2ff] tracking-wider">LIVE FEED:
+                    $0.63/1k</span>
+            </div>
+        </header>
+
+        <!-- Panel de Divisas -->
+        <div class="glass p-6 rounded-2xl mb-8">
+            <h3 class="text-sm font-bold mb-4 uppercase text-zinc-400 flex items-center gap-2"><i data-lucide="coins"
+                    class="w-4 h-4 text-[#00f2ff]"></i> Divisas Principales</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="flex items-center gap-4 p-4 bg-white/5 rounded-xl border border-[#00f2ff]/20">
+                    <div class="w-12 h-12 rounded-full bg-[#00f2ff]/20 flex items-center justify-center"><i
+                            data-lucide="circle-dollar-sign" class="w-6 h-6 text-[#00f2ff]"></i></div>
+                    <div class="flex-1">
+                        <p class="text-[10px] text-zinc-500 uppercase tracking-widest">Coins L2</p>
+                        <p class="text-xl font-bold neon-text-cyan font-mono" id="currency-coins">--</p>
+                        <p class="text-[10px] text-zinc-500 mt-1">Pool Total</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-white/5 rounded-xl border border-emerald-500/20">
+                    <div class="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center"><i
+                            data-lucide="dollar-sign" class="w-6 h-6 text-emerald-500"></i></div>
+                    <div class="flex-1">
+                        <p class="text-[10px] text-zinc-500 uppercase tracking-widest">USDT</p>
+                        <p class="text-xl font-bold text-emerald-500 font-mono" id="currency-usdt">$0.00</p>
+                        <p class="text-[10px] text-zinc-500 mt-1">≈ Coins Value</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4 p-4 bg-white/5 rounded-xl border border-amber-500/20">
+                    <div class="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center"><i
+                            data-lucide="landmark" class="w-6 h-6 text-amber-500"></i></div>
+                    <div class="flex-1">
+                        <p class="text-[10px] text-zinc-500 uppercase tracking-widest">Valor Total (Adena)</p>
+                        <p class="text-lg font-bold text-amber-500 font-mono" id="currency-adena">--</p>
+                        <p class="text-[10px] text-zinc-500 mt-1">Capital en Adena</p>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-6 p-4 bg-white/5 rounded-xl border border-white/10">
+                <h4 class="text-[10px] text-zinc-500 uppercase tracking-widest mb-3">Tasas de Conversión</h4>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div class="flex items-center gap-2"><i data-lucide="arrow-right"
+                            class="w-3 h-3 text-[#00f2ff]"></i><span class="text-zinc-400">1,000 Coins =</span><span
+                            class="font-mono text-emerald-400" id="rate-usdt">-- USDT</span></div>
+                    <div class="flex items-center gap-2"><i data-lucide="arrow-right"
+                            class="w-3 h-3 text-emerald-500"></i><span class="text-zinc-400">1 Coin =</span><span
+                            class="font-mono text-amber-400" id="rate-adena">-- Adena</span></div>
+                    <div class="flex items-center gap-2"><i data-lucide="arrow-right"
+                            class="w-3 h-3 text-[#ff00ff]"></i><span class="text-zinc-400">1 USDT =</span><span
+                            class="font-mono text-amber-400" id="rate-cross">-- Adena</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- KPI Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+            <div class="kpi-card glass p-6 rounded-xl border-l-4 border-[#00f2ff]">
+                <p class="text-xs text-zinc-500 mb-1 uppercase">Venta de Coins</p>
+                <h3 class="text-2xl font-bold neon-text-cyan" id="kpi-income">0 Coins</h3>
+            </div>
+            <div class="kpi-card glass p-6 rounded-xl border-l-4 border-[#ff00ff]">
+                <p class="text-xs text-zinc-500 mb-1 uppercase">Volatilidad Mercado</p>
+                <h3 class="text-2xl font-bold neon-text-magenta" id="kpi-vol">--%</h3>
+            </div>
+            <div class="kpi-card glass p-6 rounded-xl border-white/10">
+                <p class="text-xs text-zinc-500 mb-1 uppercase">Items (USDT)</p>
+                <h3 class="text-2xl font-bold" id="kpi-stock">$0.00</h3>
+            </div>
+            <div class="kpi-card glass p-6 rounded-xl border-white/10">
+                <p class="text-xs text-zinc-500 mb-1 uppercase">ROI Histórico</p>
+                <h3 class="text-2xl font-bold text-green-400" id="kpi-roi">+0.0%</h3>
+            </div>
+        </div>
+
+        <!-- Inventory Section -->
+        <div class="glass p-8 rounded-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-bold flex items-center gap-2 uppercase">
+                    <i data-lucide="package" class="text-[#00f2ff]"></i>
+                    Stock de Recursos
+                </h3>
+                <div class="glass px-3 py-1 rounded">
+                    <span class="text-xs text-zinc-500">TOTAL VALORIZADO: </span>
+                    <span class="text-sm font-bold neon-text-cyan" id="total-inventory-value">$0.00</span>
+                </div>
+            </div>
+
+            <div class="glass p-6 rounded-xl border border-white/10 mb-8">
+                <h4 class="text-sm font-bold mb-4 uppercase text-zinc-400">Añadir Nuevo Item</h4>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <input type="text" id="new-asset-name" placeholder="Nombre del Item"
+                        class="md:col-span-2 bg-white/5 border border-white/10 rounded px-4 py-2 text-sm outline-none focus:border-[#00f2ff] transition-all">
+                    <input type="number" id="new-asset-stock" placeholder="Cantidad" min="1"
+                        class="bg-white/5 border border-white/10 rounded px-4 py-2 text-sm outline-none focus:border-[#00f2ff] transition-all">
+                    <input type="number" id="new-asset-price" placeholder="Precio USDT" min="0" step="0.01"
+                        class="bg-white/5 border border-white/10 rounded px-4 py-2 text-sm outline-none focus:border-[#00f2ff] transition-all">
+                </div>
+                <button onclick="addAsset()"
+                    class="w-full mt-4 px-6 py-2 bg-[#00f2ff]/20 text-[#00f2ff] border border-[#00f2ff]/40 rounded font-bold hover:bg-[#00f2ff]/30 transition-all uppercase text-sm">
+                    <i data-lucide="plus" class="w-4 h-4 inline"></i> Añadir Item
+                </button>
+            </div>
+
+            <div class="overflow-x-auto mb-8">
+                <table class="w-full">
+                    <thead>
+                        <tr class="border-b border-white/10">
+                            <th class="text-left py-3 text-xs text-zinc-500 uppercase tracking-widest">Item</th>
+                            <th class="text-center py-3 text-xs text-zinc-500 uppercase tracking-widest">Stock</th>
+                            <th class="text-center py-3 text-xs text-zinc-500 uppercase tracking-widest">Precio Unit.
+                            </th>
+                            <th class="text-left py-3 text-xs text-zinc-500 uppercase tracking-widest">Valor Total</th>
+                            <th class="text-right py-3 text-xs text-zinc-500 uppercase tracking-widest">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="inventory-body">
+                        <!-- Contenido dinámico generado por JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script src="mobile-menu.js"></script>
+    <script src="inventario.js"></script>
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+
+</html>

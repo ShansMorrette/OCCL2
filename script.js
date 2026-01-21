@@ -27,6 +27,14 @@ let simState = {
     risk: 3
 };
 
+// --- ESTADO DE PAQUETES Y DESCUENTOS ---
+if (!config.packages) config.packages = [];
+if (!config.customDiscounts) config.customDiscounts = [];
+config.activeDiscountId = 0; // 0 = None
+
+// --- ESTADO DE PLANTILLAS (REMOVED LEGACY) ---
+// Unified Template System uses localStorage('smartTemplateUnified') and DEFAULT_SMART_TEMPLATE const.
+
 let mainChart;
 
 // --- ELEMENTOS DEL DOM ---
@@ -46,7 +54,24 @@ const els = {
     cfgPrice: document.getElementById('cfg-market-price'),
     cfgAdena: document.getElementById('cfg-adena-rate'),
     cfgCap: document.getElementById('cfg-init-cap'),
-    partnersList: document.getElementById('partners-config-list')
+    partnersList: document.getElementById('partners-config-list'),
+    // Templates UI (Unified)
+    msgOutput: document.getElementById('message-output'),
+    // Legacy elements removed (tplEditor, tabs, etc)
+    // New Smart Generator Inputs
+    genClient: document.getElementById('gen-client'), // Legacy but valid
+    genToggle: document.getElementById('gen-discount-toggle'),
+    genDiscountSelect: document.getElementById('gen-discount-select'),
+    newDiscountName: document.getElementById('new-discount-name'),
+    newDiscountVal: document.getElementById('new-discount-val'),
+
+    // Package Manager inputs
+    newPkgAmount: document.getElementById('new-pkg-amount'),
+    packagesList: document.getElementById('packages-list'),
+
+    // Legacy Template stuff (REMOVED)
+    // tplVersion: document.getElementById('template-version-select'),
+    // msgOutput (Already defined above)
 };
 
 // --- UTILIDADES ---
@@ -67,9 +92,9 @@ async function loadData() {
         alert("Error crítico: No se pudo conectar con Supabase. Revisa la consola.");
         return;
     }
-    
+
     console.log("🔄 Cargando datos de Supabase...");
-    
+
     // 1. Cargar Configuración
     const { data: dbConfig, error: errConfig } = await supabaseClient.from('config').select('*').eq('id', 1).single();
     if (errConfig) console.error("❌ Error cargando Config:", errConfig.message);
@@ -77,6 +102,7 @@ async function loadData() {
         config.marketPrice = parseFloat(dbConfig.market_price);
         config.adenaRate = parseFloat(dbConfig.adena_rate);
         config.initialCapital = parseFloat(dbConfig.initial_capital);
+        config.template_unified = dbConfig.template_unified; // Load Template from DB
         simState.capital = config.initialCapital;
     }
 
@@ -127,15 +153,52 @@ async function loadData() {
     // Inicializar UI con datos cargados
     calculatePartnerPercentages();
     updateFormInputs(); // Actualizar inputs con datos de DB
-    
+
     // Refrescar vistas específicas
     renderAssets();
     renderPartnersList();
     renderSalesHistory();
     updateSalesStats();
     updateGlobalKPIs();
+    populateSalePartnerSelect();
+    populateSaleItemSelect();
+    populateSaleItemSelect();
     syncChart();
-    
+
+    // --- SMART CONSOLE V3 INIT ---
+    if (!config.customDiscounts || config.customDiscounts.length === 0) {
+        // Default presets if empty
+        config.customDiscounts = [
+            { id: 1, label: "Remate 40%", value: 40 },
+            { id: 2, label: "Promo 20%", value: 20 },
+            { id: 3, label: "Black Friday 50%", value: 50 },
+        ];
+    }
+    // 5. Cargar Paquetes (NEW)
+    // 5. Cargar Paquetes (DEPRECATED: Now in templates.html)
+    // Removed load logic to prevent main dashboard overhead.
+    config.packages = [];
+    // const { data: dbPackages, error: errPackages } = await supabaseClient.from('packages').select('*').order('amount');
+    // ... logic removed ...
+    // Fallback? No needed in main dashboard.
+
+    // Sanitize packages (remove NaN or invalid)
+    config.packages = config.packages.filter(p => typeof p === 'number' && !isNaN(p) && p > 0);
+    renderDiscountSelect();
+    // Populate Template Inputs (Unified)
+    const tMaster = document.getElementById('smart-tpl-master');
+    // Prioritize Supabase config, fallback to LocalStorage (migration), then Default
+    let savedTpl = config.template_unified || localStorage.getItem('smartTemplateUnified');
+
+    if (!savedTpl) {
+        savedTpl = DEFAULT_SMART_TEMPLATE;
+    }
+
+    if (tMaster) tMaster.value = savedTpl;
+
+    renderPackagesList(); // Render sanitized packages
+    updateMessagePreview();
+
     console.log("✅ Datos cargados correctamente.");
 }
 
@@ -147,56 +210,46 @@ function updateFormInputs() {
     if (els.inputCap) els.inputCap.value = config.initialCapital;
 }
 
-// Función de Migración (Ejecutar manualmente en consola: window.migrateToSupabase())
-window.migrateToSupabase = async () => {
-    if (!confirm("¿Estás seguro de subir los datos locales a Supabase? Esto podría duplicar datos si ya existen.")) return;
-    
-    const localConfig = JSON.parse(localStorage.getItem('l2_config'));
-    const localAssets = JSON.parse(localStorage.getItem('l2_assets'));
-    const localSales = JSON.parse(localStorage.getItem('l2_sales'));
-
-    if (localConfig) {
-        await supabaseClient.from('config').upsert({ 
-            id: 1, 
-            market_price: localConfig.marketPrice,
-            adena_rate: localConfig.adenaRate,
-            initial_capital: localConfig.initialCapital || 0
-        });
-        
-        // Socios
-        for (const p of localConfig.partners) {
-            await supabaseClient.from('partners').insert({ name: p.name, coins_invested: p.coinsInvested });
-        }
-    }
-    
-    if (localAssets) {
-        for (const a of localAssets) {
-            await supabaseClient.from('assets').insert({ name: a.name, stock: a.stock, usdt_value: a.usdtValue });
-        }
-    }
-    
-    alert("Migración completada. Recarga la página.");
-};
-
-function saveAll() {
-    // Deprecado: Ahora usamos Supabase directamente en las funciones de acción.
-    // console.log("saveAll() llamado - Operación ignorada en modo Supabase");
-}
+// function saveAll() { ... } // DEPRECATED: Supabase is used directly.
 
 // --- FUNCIONES DE VENTAS ---
 
 function populateSalePartnerSelect() {
     const select = document.getElementById('sale-partner');
-    if (!select) return;
+    const filterSelect = document.getElementById('chart-filter-partner'); // Filtro del gráfico
 
-    select.innerHTML = '<option value="" class="bg-zinc-900 text-white">Seleccionar socio...</option>';
-    config.partners.forEach(p => {
-        const option = document.createElement('option');
-        option.className = 'bg-zinc-900 text-white';
-        option.value = p.id;
-        option.textContent = `${p.name} (${new Intl.NumberFormat().format(p.coinsInvested || 0)} Coins)`;
-        select.appendChild(option);
-    });
+    if (select) {
+        select.innerHTML = '<option value="" class="bg-zinc-900 text-white">Seleccionar socio...</option>';
+    }
+
+    if (filterSelect) {
+        // Guardar selección actual si existe
+        const currentFilter = filterSelect.value;
+        filterSelect.innerHTML = '<option value="all" class="bg-zinc-900 text-white">Todos los Socios</option>';
+
+        config.partners.forEach(p => {
+            const option = document.createElement('option');
+            option.className = 'bg-zinc-900 text-white';
+            option.value = p.id;
+            option.textContent = p.name;
+            filterSelect.appendChild(option);
+        });
+
+        if (config.partners.some(p => p.id == currentFilter)) {
+            filterSelect.value = currentFilter;
+        }
+    }
+
+    if (select) {
+        config.partners.forEach(p => {
+            const option = document.createElement('option');
+            option.className = 'bg-zinc-900 text-white';
+            option.value = p.id;
+            // Solo para el formulario de venta mostramos el saldo
+            option.textContent = `${p.name} (${new Intl.NumberFormat().format(p.coinsInvested || 0)} Coins)`;
+            select.appendChild(option);
+        });
+    }
 }
 
 function updateSalePreview() {
@@ -241,7 +294,7 @@ function updateSalePreview() {
     }
 
     if (previewUSDT) previewUSDT.innerText = fmt(profit);
-    
+
     if (previewRemaining) {
         // Actualizamos el HTML del padre para asegurar que la etiqueta y el valor estén sincronizados
         // IMPORTANTE: Se incluye id="sale-preview-remaining" para no perder la referencia en futuras actualizaciones
@@ -326,7 +379,7 @@ async function registerItemSale(amount, price) {
         .from('assets')
         .update({ stock: item.stock - amount })
         .eq('id', item.id);
-    
+
     if (assetError) { alert('Error DB (Asset): ' + assetError.message); return; }
 
     // 2. Insertar Venta en DB
@@ -414,17 +467,17 @@ async function registerGlobalSale(amount, price) {
     // 1. Actualizar cada socio en DB (Loop secuencial para asegurar integridad)
     for (const p of config.partners) {
         const share = Math.round(amount * (p.perc / 100));
-        
+
         const { error } = await supabaseClient
             .from('partners')
             .update({ coins_invested: (p.coinsInvested || 0) - share })
             .eq('id', p.id);
-            
+
         if (error) console.error(`Error actualizando socio ${p.name}:`, error);
-        
+
         // Actualizar local
         p.coinsInvested = (p.coinsInvested || 0) - share;
-        
+
         distribution.push({
             partnerId: p.id,
             partnerName: p.name,
@@ -476,7 +529,7 @@ function addSaleToLocalList(dbSale, displayName) {
 function completeSaleTransaction() {
     // Guardar todo
     // saveAll(); // Ya no es necesario
-    
+
     // Recalcular porcentajes globales
     calculatePartnerPercentages();
 
@@ -705,7 +758,7 @@ window.editSale = (saleId) => {
         alert('Venta de Coins actualizada correctamente.');
     } else if (sale.type === 'global') {
         // --- LÓGICA PARA EDITAR VENTAS GLOBALES ---
-        
+
         // 1. Calcular Pool Global disponible (Actual + Devolución de esta venta)
         const currentGlobal = config.currencies.coins || getTotalCoins();
         const maxCoins = currentGlobal + sale.amount;
@@ -753,7 +806,7 @@ window.editSale = (saleId) => {
         config.partners.forEach(p => {
             const share = Math.round(newAmount * (p.perc / 100));
             p.coinsInvested = (p.coinsInvested || 0) - share;
-            
+
             newDistribution.push({
                 partnerId: p.id,
                 partnerName: p.name,
@@ -1122,8 +1175,9 @@ function runSimulation() {
     }
 
     const roiPerc = totalInvested > 0 ? ((balance / totalInvested) - 1) * 100 : 0;
-    if (els.kpiRoi) els.kpiRoi.innerText = (roiPerc >= 0 ? '+' : '') + roiPerc.toFixed(1) + '%';
-    if (els.kpiVol) els.kpiVol.innerText = (v * 100).toFixed(1) + '%';
+    // Eliminado: No sobrescribir KPIs globales con datos de simulación
+    // if (els.kpiRoi) els.kpiRoi.innerText = (roiPerc >= 0 ? '+' : '') + roiPerc.toFixed(1) + '%';
+    // if (els.kpiVol) els.kpiVol.innerText = (v * 100).toFixed(1) + '%';
 
     // Actualizar displays del simulador
     const simFinalCap = document.getElementById('sim-final-capital');
@@ -1254,6 +1308,22 @@ async function addCoinsToPartner(partnerId) {
 
     if (error) { alert('Error DB: ' + error.message); return; }
 
+    // Registrar Transacción (DEPOSIT) - Historial Universal
+    const { error: transError } = await supabaseClient
+        .from('sales')
+        .insert([{
+            date: new Date().toISOString(),
+            type: 'DEPOSIT',
+            partner_id: partnerId,
+            partner_name: partner.name,
+            amount: coinsToAdd,
+            price: 0,
+            profit: 0,
+            confirmed: true
+        }]);
+
+    if (transError) console.error("Error registrando depósito:", transError.message);
+
     // Agregar Coins al socio
     partner.coinsInvested = newBalance;
 
@@ -1309,6 +1379,22 @@ async function withdrawCoinsFromPartner(partnerId) {
         .eq('id', partnerId);
 
     if (error) { alert('Error DB: ' + error.message); return; }
+
+    // Registrar Transacción (WITHDRAWAL) - Historial Universal
+    const { error: transError } = await supabaseClient
+        .from('sales')
+        .insert([{
+            date: new Date().toISOString(),
+            type: 'WITHDRAWAL',
+            partner_id: partnerId,
+            partner_name: partner.name,
+            amount: coinsToWithdraw,
+            price: 0,
+            profit: 0,
+            confirmed: true
+        }]);
+
+    if (transError) console.error("Error registrando retiro:", transError.message);
 
     // Retirar Coins del socio
     partner.coinsInvested = newBalance;
@@ -1372,7 +1458,9 @@ function renderAssets() {
     // Update total inventory value display
     const totalInvValue = document.getElementById('total-inventory-value');
     if (totalInvValue) {
-        totalInvValue.innerText = fmt(getInventoryTotal());
+        const totalUSDT = getInventoryTotal();
+        const totalCoins = usdtToCoins(totalUSDT);
+        totalInvValue.innerHTML = `${fmt(totalUSDT)} <span class="text-xs text-zinc-400 font-normal ml-2">≈ ${new Intl.NumberFormat().format(Math.round(totalCoins))} Coins</span>`;
     }
 }
 
@@ -1467,6 +1555,311 @@ window.editAssetPrice = async (id) => {
     updateGlobalKPIs();
 };
 
+// --- LÓGICA DE PLANTILLAS ---
+
+// --- LÓGICA DE PLANTILLAS ---
+
+// --- LÓGICA DE PLANTILLAS V3 Y GESTOR DE DESCUENTOS ---
+
+window.addDiscount = () => {
+    const name = els.newDiscountName.value.trim();
+    const val = parseFloat(els.newDiscountVal.value);
+
+    if (!name || isNaN(val)) { alert("Nombre y valor requeridos."); return; }
+
+    config.customDiscounts.push({ id: Date.now(), label: name, value: val });
+    els.newDiscountName.value = '';
+    els.newDiscountVal.value = '';
+
+    saveDiscounts();
+    renderDiscountSelect();
+};
+
+window.saveDiscounts = () => {
+    localStorage.setItem('agoria_discounts', JSON.stringify(config.customDiscounts));
+};
+
+window.loadDiscounts = () => {
+    const saved = localStorage.getItem('agoria_discounts');
+    if (saved) {
+        config.customDiscounts = JSON.parse(saved);
+        // Default discounts if empty?
+    } else {
+        config.customDiscounts = [
+            { id: 1, label: "Remate 40%", value: 40 },
+            { id: 2, label: "Promo 20%", value: 20 }
+        ];
+    }
+    renderDiscountSelect();
+};
+
+window.renderDiscountSelect = () => {
+    if (!els.genDiscountSelect) return;
+    // Keep first option
+    els.genDiscountSelect.innerHTML = '<option value="0">Sin Descuento Extra</option>';
+
+    config.customDiscounts.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.id;
+        opt.innerText = `${d.label} (${d.value}%)`;
+        els.genDiscountSelect.appendChild(opt);
+    });
+};
+
+// Fórmula V3
+function getCalculatedPrice(amount) {
+    const baseRate = config.marketPrice || 0.63;
+    const isDiscountActive = els.genToggle ? els.genToggle.checked : false;
+
+    let discountPercent = 0;
+    if (isDiscountActive) {
+        // Get selected discount
+        const selectedId = parseInt(els.genDiscountSelect.value);
+        if (selectedId !== 0) {
+            const disc = config.customDiscounts.find(d => d.id === selectedId);
+            if (disc) discountPercent = disc.value;
+        } else {
+            // Fallback default discount if toggle ON but no preset selected? 
+            // Or maybe Toggle ON implies "Apply Selected Discount". If 0 selected, then 0 discount?
+            // "Si ToggleDescuento == ON -> Usar config.marketPrice * 0.6 (o el precio de oferta que definas)"
+            // Let's assume selecting "Sin Descuento" acts as 0%. 
+            // BUT user prompt said: "Selector de Descuento: ... para elegir cuál ... aplicar".
+            // If toggle is ON, we apply it. If toggle OFF, we don't.
+            discountPercent = 0;
+        }
+    }
+
+    // Wait, the prompt logic is:
+    // "El sistema debe cruzar tres datos... Descuento Activo: El porcentaje elegido..."
+    // "Si ToggleDescuento == OFF -> Usar config.marketPrice"
+    // "Si ToggleDescuento == ON -> Usar config.marketPrice * (1 - %Descuento/100)"
+
+    if (isDiscountActive) {
+        const selectedId = parseInt(els.genDiscountSelect.value);
+        const disc = config.customDiscounts.find(d => d.id === selectedId);
+        if (disc) discountPercent = disc.value;
+        // If "Sin Descuento" (0) is selected but Toggle is ON?
+        // Maybe default 40% only if nothing selected?
+        // User said: "Crud de Descuentos... Selector de Descuento...".
+        // Let's rely strictly on selector.
+    }
+
+    const rawPrice = (amount / 1000) * baseRate * (1 - (discountPercent / 100));
+    return (Math.ceil(rawPrice * 100) / 100).toFixed(2);
+}
+
+window.updateMessagePreview = () => {
+    // PREVIEW OUTPUT GENERATION
+    // This now generates the SYSTEM OUTPUT based on:
+    // 1. Packages selected
+    // 2. Active Discount/Toggle settings
+
+    if (!els.msgOutput) return;
+
+    let output = "█ SMART SYSTEM ONLINE...\n";
+
+    const isDiscountActive = els.genToggle.checked;
+
+    // Recalculate package list display first
+    renderPackages();
+
+    // Build Message from Selected Packages
+    const selectedPacks = config.packages.filter(p => p.selected).sort((a, b) => a.amount - b.amount);
+
+    if (selectedPacks.length === 0) {
+        output += "█ NO PACKAGES SELECTED.";
+        els.msgOutput.innerText = output;
+        return;
+    }
+
+    output += "█ GENERATING OFFER...\n\n";
+
+    // Header
+    if (isDiscountActive) {
+        const selectedId = parseInt(els.genDiscountSelect.value);
+        const disc = config.customDiscounts.find(d => d.id === selectedId);
+        const label = disc ? disc.label.toUpperCase() : "OFERTA";
+        output += `🔥 ¡${label}! 🔥\n\n`;
+    } else {
+        output += "📋 LISTA DE PRECIOS\n\n";
+    }
+
+    // Items
+    selectedPacks.forEach(p => {
+        const price = getCalculatedPrice(p.amount);
+        output += `💰 ${new Intl.NumberFormat().format(p.amount / 1000)}k Coins ➜ $${price} USDT\n`;
+    });
+
+    if (isDiscountActive) {
+        output += "\n⏳ Oferta por tiempo limitado.";
+    }
+
+    els.msgOutput.innerText = output;
+};
+
+window.copyToClipboard = (elementId) => {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+
+    const text = element.tagName === 'TEXTAREA' || element.tagName === 'INPUT' ? element.value : element.innerText;
+
+    navigator.clipboard.writeText(text).then(() => {
+        // Feedback visual sutil opcional
+    }).catch(err => {
+        console.error('Error al copiar: ', err);
+    });
+};
+
+// [LEGACY TEMPLATE FUNCTIONS REMOVED]
+// The new system uses 'updateMessagePreview' and 'smart-tpl-master' in the Config section.
+
+// --- GESTOR DE PAQUETES ---
+
+window.loadPackages = () => {
+    const saved = localStorage.getItem('agoria_packages');
+    if (saved) {
+        config.packages = JSON.parse(saved);
+    } else {
+        // Default packages if none saved
+        config.packages = [
+            { id: 1, amount: 10000, selected: true },
+            { id: 2, amount: 50000, selected: true },
+            { id: 3, amount: 100000, selected: true }
+        ];
+    }
+    renderPackages();
+};
+
+window.savePackages = () => {
+    localStorage.setItem('agoria_packages', JSON.stringify(config.packages));
+};
+
+window.renderPackages = () => {
+    if (!els.packagesList) return;
+    els.packagesList.innerHTML = '';
+
+    // Calculate current prices for display (Mirror Logic)
+    const isDiscountActive = els.genToggle ? els.genToggle.checked : false;
+    const baseRate = config.marketPrice || 0.63;
+    // For display in list, we can show base price
+    // But user asked for "Precio Sugerido" which might imply current context or just base.
+    // Let's show Base Price for clarity in the list, or dynamic?
+    // User requirement: "Sincronización de Precios (Lógica Espejo)... se recalculan al instante"
+    // implies dynamic display.
+
+    // NOTE: LIST IN UI shows "Precio Sugerido". Let's show the standard price there, 
+    // or maybe the discounted one if toggle is ON?
+    // Let's show Standard Price (Base) in list to avoid confusion, 
+    // or better yet, show both or depend on toggle?
+    // Requirement says: "El generador leerá siempre config.marketPrice... Si se cambia el precio en el Panel... se recalculan"
+    // This applies to the GENERATOR. The list UI just needs to be editable.
+    // I will show the BASE price in the list for reference.
+
+    config.packages.forEach(pkg => {
+        const price = (pkg.amount / 1000) * baseRate;
+        const div = document.createElement('div');
+        div.className = 'flex items-center justify-between p-2 bg-white/5 rounded hover:bg-white/10 transition-colors';
+        div.innerHTML = `
+            <div class="flex items-center gap-3">
+                <input type="checkbox" onchange="togglePackageSelection(${pkg.id})" 
+                    ${pkg.selected ? 'checked' : ''} 
+                    class="w-4 h-4 rounded border-white/20 bg-black/40 text-amber-400 focus:ring-amber-400">
+                <div class="flex flex-col">
+                    <span class="text-xs font-bold text-zinc-200">${new Intl.NumberFormat().format(pkg.amount)} Coins</span>
+                    <span class="text-[10px] text-zinc-500 font-mono">Est: $${price.toFixed(2)} USDT</span>
+                </div>
+            </div>
+            <button onclick="removePackage(${pkg.id})" class="text-red-400/60 hover:text-red-400 transition-colors p-1">
+                <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
+        `;
+        els.packagesList.appendChild(div);
+    });
+    lucide.createIcons();
+};
+
+window.addPackage = () => {
+    const amount = parseInt(els.newPkgAmount.value);
+    if (!amount || amount <= 0) {
+        alert("Ingresa una cantidad válida.");
+        return;
+    }
+
+    const newId = Date.now(); // Simple ID generation
+    config.packages.push({
+        id: newId,
+        amount: amount * 1000, // Input is in 'k', so multiply by 1000? 
+        // Placeholder says "Cantidad (k)". User example: 10000.
+        // If input is "10", does it mean 10k?
+        // Let's assume input is in 'K' based on placeholder "Cantidad (k)".
+        // Wait, user example says "Cantidad: 10,000".
+        // If user types 10, it should probably be 10,000.
+        // Let's multiply by 1000 if strict interpretation of 'k'.
+        // However, the input placeholder says "Cantidad (k)" but user might type raw.
+        // Let's support raw number logic from input but treat as K if small? 
+        // safely: Let's assume input implies Kilo as per placeholder.
+        amount: amount * 1000,
+        selected: true
+    });
+
+    els.newPkgAmount.value = '';
+    savePackages();
+    renderPackages();
+};
+
+window.removePackage = (id) => {
+    config.packages = config.packages.filter(p => p.id !== id);
+    savePackages();
+    renderPackages();
+};
+
+window.togglePackageSelection = (id) => {
+    const pkg = config.packages.find(p => p.id === id);
+    if (pkg) {
+        pkg.selected = !pkg.selected;
+        savePackages();
+    }
+};
+
+window.buildPackageMessage = () => {
+    const isDiscountOn = els.genToggle ? els.genToggle.checked : false;
+    const baseRate = config.marketPrice || 0.63;
+    const activePrice = isDiscountOn ? (baseRate * 0.6) : baseRate;
+
+    // Sort packages by amount?
+    const selectedPacks = config.packages
+        .filter(p => p.selected)
+        .sort((a, b) => a.amount - b.amount);
+
+    let listText = "📋 LISTA DE PRECIOS\n\n";
+
+    selectedPacks.forEach(p => {
+        const totalUSD = (p.amount / 1000) * activePrice;
+        // Rounding logic: ceil 2 decimals
+        const finalPrice = Math.ceil(totalUSD * 100) / 100;
+
+        listText += `💰 ${new Intl.NumberFormat().format(p.amount / 1000)}k Coins ➜ $${finalPrice.toFixed(2)} USDT\n`;
+    });
+
+    if (isDiscountOn) {
+        listText += "\n🔥 ¡PRECIOS DE REMATE APLICADOS! (40% OFF)";
+    }
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(listText).then(() => {
+        alert("¡Lista generada y copiada al portapapeles!");
+    });
+};
+
+// Update updateMessagePreview to create listener for render updates?
+// Not strictly needed unless list shows live prices sensitive to Toggle.
+// Let's hook into updateMessagePreview to re-render packages so prices update?
+// Or just let them be static base prices in the list view?
+// User requirement: "El generador leerá siempre... Si se cambia... se recalculan".
+// This refers to the OUTPUT. The list preview " Precio Sugerido" should ideally update if possible.
+// Let's make updateMessagePreview call renderPackages too? Might be too heavy.
+// Let's keep renderPackages simple for now.
+
 // --- INICIALIZACIÓN ---
 
 function initUI() {
@@ -1495,9 +1888,14 @@ function initUI() {
                     activeSec.classList.remove('opacity-0');
                     activeSec.classList.add('opacity-100');
                 }, 50);
-                
+
                 // AUTO-REFRESH: Recargar datos al cambiar de pestaña
                 loadData();
+            }
+
+            // Cargar plantillas si es la pestaña correcta
+            if (tab === 'templates') {
+                // switchTemplateTab('sale'); // REMOVED LEGACY CALL
             }
         });
     });
@@ -1694,26 +2092,27 @@ function initUI() {
             ]);
         }
 
-        // 2. Actualizar Gráfico Principal (Mercado Real)
+        // 2. Actualizar Gráfico Principal (Mercado Real - Lógica Acumulativa)
         if (window.mainChartInstance) {
-            // Datos Reales: Desglose por Socio Y Global
+
+            // --- A. Preparación de Datos ---
             const currentPool = getTotalCoins();
             const sortedSales = [...sales]
                 .filter(s => s.date && !isNaN(new Date(s.date).getTime()))
-                .sort((a, b) => new Date(a.date) - new Date(b.date));
-            const poolData = [];
+                .sort((a, b) => new Date(a.date) - new Date(b.date)); // Orden cronológico ascendente (más viejo a más nuevo)
 
-            // 1. Inicializar Mapa de Series
+            // Inicializar Series Map
             const partnerSeriesMap = {};
 
-            // A. Serie Global (Magenta)
+            // Serie Global (Ventas Globales)
             partnerSeriesMap['global'] = {
                 name: 'Ventas Globales',
                 type: 'area',
-                data: []
+                data: [],
+                color: '#ff00ff'
             };
 
-            // B. Series de Socios (Colores Variables)
+            // Series de Socios
             if (config.partners) {
                 const colors = ['#fbbf24', '#22c55e', '#a855f7', '#f97316', '#3b82f6'];
                 config.partners.forEach((p, index) => {
@@ -1726,67 +2125,118 @@ function initUI() {
                 });
             }
 
-            // 2. Agrupar Ventas
-            const salesByTimeAndEntity = {};
-            const uniqueTimeKeys = new Set();
+            // --- B. Cálculo Histórico y Acumulativo ---
 
-            if (sortedSales.length === 0) {
-                poolData.push({ x: new Date().getTime(), y: currentPool });
+            // Necesitamos 'reconstruir' la historia.
+            // Empezamos desde el Pasado hacia el Presente.
+            // Pero tenemos el Pool ACTUAL.
+            // Pool(t) = Pool(t-1) - Ventas(t)  <-- Si vamos adelante en el tiempo y sabemos el inicial
+            // Pero NO sabemos el inicial exacto hace X tiempo fácilmente sin iterar todo.
+            // Alternativa: Pool(t) = Pool_Actual + Suma_Ventas_Despues_de_t
+
+            // Estrategia:
+            // 1. Calcular Ventas Totales Históricas por Socio (para saber cuanto han vendido en total hasta hoy)
+            // No, mejor: Iterar cronológicamente y acumular ventas.
+            // Para el Pool: Calcular el Pool Inicial 'Teórico' antes de todas las ventas registradas.
+            // Pool_Inicial_Teorico = Pool_Actual + Total_Todas_Ventas
+
+            // Paso 1: Calcular totales absolutos de ventas para derivar el pasado
+            const totalSalesVolume = sortedSales.reduce((sum, s) => sum + (s.amount || 0), 0);
+            let theoreticalPool = currentPool + totalSalesVolume;
+
+            // Mapas de acumulados corrientes
+            const runningSales = { 'global': 0 };
+            config.partners.forEach(p => runningSales[p.id] = 0);
+
+            // Puntos de datos
+            const poolData = [];
+
+            // Agrupar ventas por hora para no saturar el gráfico
+            const salesByTime = {};
+            sortedSales.forEach(s => {
+                const timeKey = new Date(s.date).toISOString().slice(0, 13) + ':00:00Z'; // Hora exacta
+                if (!salesByTime[timeKey]) salesByTime[timeKey] = [];
+                salesByTime[timeKey].push(s);
+            });
+
+            const uniqueTimeKeys = Object.keys(salesByTime).sort((a, b) => new Date(a) - new Date(b));
+
+            // Punto Inicial (Antes de la primera venta registrada)
+            // Si hay ventas, el punto inicial es t = (PrimeraVenta - 1h) con valor theoreticalPool
+            // Y ventas acumuladas en 0.
+            if (uniqueTimeKeys.length > 0) {
+                const firstTime = new Date(uniqueTimeKeys[0]).getTime() - 3600000; // 1 hora antes
+                poolData.push({ x: firstTime, y: theoreticalPool });
+
+                Object.keys(partnerSeriesMap).forEach(k => {
+                    partnerSeriesMap[k].data.push({ x: firstTime, y: 0 }); // 0 ventas acumuladas al inicio
+                });
             } else {
-                sortedSales.forEach(s => {
-                    const date = new Date(s.date);
-                    // Agregación por hora: YYYY-MM-DDTHH
-                    const timeKey = date.toISOString().slice(0, 13);
-                    uniqueTimeKeys.add(timeKey);
+                // Sin ventas: mostrar linea plana actual
+                const now = new Date().getTime();
+                poolData.push({ x: now - 3600000, y: currentPool });
+                poolData.push({ x: now, y: currentPool });
+            }
 
-                    if (!salesByTimeAndEntity[timeKey]) salesByTimeAndEntity[timeKey] = {};
+            // Iterar el tiempo
+            uniqueTimeKeys.forEach(timeKey => {
+                const timestamp = new Date(timeKey).getTime();
+                const salesInThisHour = salesByTime[timeKey];
 
-                    // Asignar a ID de socio O 'global'
+                // Procesar cambios en esta hora
+                salesInThisHour.forEach(s => {
+                    const amount = s.amount || 0;
+
+                    // Restar del Pool (porque vamos adelante en el tiempo y se vendió)
+                    theoreticalPool -= amount;
+
+                    // Sumar al acumulado de ventas
                     const entityId = s.partnerId ? s.partnerId : 'global';
-
-                    if (!salesByTimeAndEntity[timeKey][entityId]) salesByTimeAndEntity[timeKey][entityId] = 0;
-                    salesByTimeAndEntity[timeKey][entityId] += (s.amount || 0);
+                    if (runningSales[entityId] !== undefined) {
+                        runningSales[entityId] += amount;
+                    }
+                    if (s.partnerId === null) { // Caso explícito global
+                        runningSales['global'] += amount;
+                    }
                 });
 
-                const sortedTimeKeys = Array.from(uniqueTimeKeys).sort((a, b) => new Date(a) - new Date(b));
+                // Registrar Puntos
+                poolData.push({ x: timestamp, y: theoreticalPool });
 
-                sortedTimeKeys.forEach(timeKey => {
-                    // Añadir sufijo UTC para asegurar parsing correcto en todos los navegadores
-                    const timestamp = new Date(timeKey + ':00:00Z').getTime();
-                    poolData.push({ x: timestamp, y: currentPool });
+                Object.keys(partnerSeriesMap).forEach(key => {
+                    partnerSeriesMap[key].data.push({ x: timestamp, y: runningSales[key] || 0 });
+                });
+            });
 
-                    const hourSales = salesByTimeAndEntity[timeKey];
-                    Object.keys(partnerSeriesMap).forEach(key => {
-                        const amount = hourSales[key] || 0;
-                        if (amount > 0) {
-                            partnerSeriesMap[key].data.push({ x: timestamp, y: amount });
-                        }
-                    });
+            // Punto Final (Ahora) para asegurar que la linea llegue al presente plana si no hubo ventas recientes
+            const now = new Date().getTime();
+            if (uniqueTimeKeys.length > 0 && uniqueTimeKeys[uniqueTimeKeys.length - 1] !== now) {
+                poolData.push({ x: now, y: currentPool }); // Debe coincidir con currentPool si la lógica es perfecta
+                Object.keys(partnerSeriesMap).forEach(key => {
+                    partnerSeriesMap[key].data.push({ x: now, y: runningSales[key] || 0 });
                 });
             }
 
-            // 3. Construir Series Finales
+            // --- C. Construcción Final ---
             const finalSeries = [
                 { name: 'Total Pool Coins', type: 'area', data: poolData, color: '#00f2ff' }
             ];
 
-            // Agregar Global si tiene datos
-            if (partnerSeriesMap['global'].data.length > 0) {
-                // Forzar color magenta si no se asignó arriba (aunque lo puse en A)
-                partnerSeriesMap['global'].color = '#ff00ff';
+            // Global
+            if (partnerSeriesMap['global'].data.some(d => d.y > 0)) {
                 finalSeries.push(partnerSeriesMap['global']);
             }
 
-            // Agregar Socios con datos
+            // Socios
             Object.keys(partnerSeriesMap).forEach(key => {
-                if (key !== 'global' && partnerSeriesMap[key].data.length > 0) {
+                if (key !== 'global' && partnerSeriesMap[key].data.some(d => d.y > 0)) {
                     finalSeries.push(partnerSeriesMap[key]);
                 }
             });
 
-            // Configuración del Gráfico
+            // Update Chart
             window.mainChartInstance.updateOptions({
-                chart: { type: 'area', stacked: false }, // Cambiado a Area (Visualmente igual a simulador pero con relleno)
+                chart: { type: 'area', stacked: false },
                 stroke: { curve: 'smooth', width: 2 },
                 fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05, stops: [0, 100] } },
                 xaxis: {
@@ -1802,10 +2252,6 @@ function initUI() {
                         style: { colors: '#a1a1aa' }
                     }
                 },
-                tooltip: {
-                    x: { format: 'dd MMM yyyy, HH:mm' },
-                    theme: 'dark'
-                },
                 yaxis: [
                     {
                         title: { text: 'Pool Coins Total', style: { color: '#00f2ff' } },
@@ -1818,12 +2264,10 @@ function initUI() {
                     },
                     {
                         opposite: true,
-                        title: { text: 'Ventas (Coins)', style: { color: '#ffff00' } }, // Amarillo/Dorado para ventas
+                        title: { text: 'Ventas Acumuladas', style: { color: '#ffff00' } },
                         labels: { style: { colors: '#ffff00' } }
                     }
-                ],
-                colors: ['#00f2ff', '#e11d48', '#fbbf24', '#22c55e', '#a855f7', '#f97316'], // Azul (Pool) + Colores socios
-                plotOptions: {} // Limpiamos opciones de barra
+                ]
             });
 
             window.mainChartInstance.updateSeries(finalSeries);
@@ -1854,7 +2298,7 @@ function initUI() {
             // 1. RESET GLOBAL DE TODOS LOS CAMPOS
             if (amountInput) amountInput.value = '';
             if (priceInput) priceInput.value = '';
-            
+
             // Forzar reseteo de selectores a la opción por defecto (índice 0)
             if (partnerSelect) {
                 partnerSelect.value = "";
@@ -1875,24 +2319,24 @@ function initUI() {
             if (saleType === 'global') {
                 if (individualPreview) individualPreview.classList.add('hidden');
                 if (globalPreview) globalPreview.classList.remove('hidden');
-                
+
                 if (labelAmount) labelAmount.innerText = "CANTIDAD DE COINS";
                 if (labelPrice) labelPrice.innerText = "PRECIO POR 1K (USDT)";
                 if (priceInput) priceInput.value = config.marketPrice.toFixed(2);
 
             } else if (saleType === 'item') {
                 if (containerItem) containerItem.classList.remove('hidden');
-                
+
                 if (labelAmount) labelAmount.innerText = "CANTIDAD DE ITEMS";
                 if (labelPrice) labelPrice.innerText = "PRECIO UNITARIO (USDT)";
-                
+
                 // Repoblar items (asegura stock actualizado)
                 // Nota: Como ya limpiamos itemSelect.value arriba, populate NO restaurará selección previa
                 populateSaleItemSelect();
             } else {
                 // Individual (Default)
                 if (containerPartner) containerPartner.classList.remove('hidden');
-                
+
                 if (labelAmount) labelAmount.innerText = "CANTIDAD DE COINS";
                 if (labelPrice) labelPrice.innerText = "PRECIO POR 1K (USDT)";
             }
@@ -1962,4 +2406,816 @@ function initUI() {
 document.addEventListener('DOMContentLoaded', () => {
     initUI();
     loadData();
+
+    // Refresco automático (Live Mode) cada 60 segundos
+    setInterval(() => {
+        if (!document.hidden) loadData();
+    }, 60000);
 });
+
+// --- OVERRIDE: Actualización para Historial Universal y Filtros ---
+window.syncChart = function () {
+    // 1. Actualizar Gráfico de Simulación
+    const simData = window.runSimulation ? window.runSimulation() : { seriesData: [], baselineData: [] };
+
+    if (window.simChartInstance) {
+        window.simChartInstance.updateSeries([
+            { name: 'Portafolio Proyectado', data: simData.seriesData },
+            { name: 'Inversión Total', data: simData.baselineData }
+        ]);
+    }
+
+    // 2. Actualizar Gráfico Principal (Mercado Real - Lógica Acumulativa + Filtros)
+    if (window.mainChartInstance) {
+
+        // --- A. Preparación y Filtros ---
+        const filterType = document.getElementById('chart-filter-type')?.value || 'all';
+        const filterPartner = document.getElementById('chart-filter-partner')?.value || 'all';
+
+        const currentPool = getTotalCoins();
+
+        const allTransactions = [...sales]
+            .filter(s => s.date && !isNaN(new Date(s.date).getTime()))
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Datos para cálculo histórico Base (Pool Total Real)
+        let totalDeposits = 0;
+        let totalWithdrawals = 0;
+        let totalSales = 0;
+
+        allTransactions.forEach(t => {
+            const amt = t.amount || 0;
+            if (t.type === 'DEPOSIT') totalDeposits += amt;
+            else if (t.type === 'WITHDRAWAL') totalWithdrawals += amt;
+            else totalSales += amt;
+        });
+
+        // Pool Inicial Teórico
+        let theoreticalPool = currentPool - totalDeposits + totalWithdrawals + totalSales;
+
+        // --- Series Data Containers ---
+        const poolData = [];
+        const partnerSeriesMap = {};
+
+        // Inicializar Series
+        partnerSeriesMap['global'] = { name: 'Ventas Globales', type: 'area', data: [], color: '#ff00ff' };
+
+        if (config.partners) {
+            const colors = ['#fbbf24', '#22c55e', '#a855f7', '#f97316', '#3b82f6'];
+            config.partners.forEach((p, index) => {
+                partnerSeriesMap[p.id] = {
+                    name: p.name,
+                    type: 'area',
+                    data: [],
+                    color: colors[index % colors.length]
+                };
+            });
+        }
+
+        const showNetBalance = (filterType === 'all');
+        const runningPartnerValue = { 'global': 0 };
+        config.partners.forEach(p => runningPartnerValue[p.id] = 0);
+
+        if (showNetBalance) {
+            config.partners.forEach(p => {
+                let pDeposits = 0;
+                let pWithdrawals = 0;
+                let pSales = 0;
+                allTransactions.forEach(t => {
+                    if (t.partnerId == p.id) {
+                        if (t.type === 'DEPOSIT') pDeposits += (t.amount || 0);
+                        else if (t.type === 'WITHDRAWAL') pWithdrawals += (t.amount || 0);
+                        else pSales += (t.amount || 0);
+                    }
+                });
+                const startBal = (p.coinsInvested || 0) - pDeposits + pWithdrawals + pSales;
+                runningPartnerValue[p.id] = startBal;
+            });
+        }
+
+        // --- B. Iteración Temporal ---
+        const salesByTime = {};
+        allTransactions.forEach(s => {
+            const timeKey = new Date(s.date).toISOString().slice(0, 13) + ':00:00Z';
+            if (!salesByTime[timeKey]) salesByTime[timeKey] = [];
+            salesByTime[timeKey].push(s);
+        });
+
+        const uniqueTimeKeys = Object.keys(salesByTime).sort((a, b) => new Date(a) - new Date(b));
+
+        // Punto Inicial
+        if (uniqueTimeKeys.length > 0) {
+            const firstTime = new Date(uniqueTimeKeys[0]).getTime() - 3600000;
+            poolData.push({ x: firstTime, y: theoreticalPool });
+            Object.keys(partnerSeriesMap).forEach(k => {
+                partnerSeriesMap[k].data.push({ x: firstTime, y: showNetBalance ? (runningPartnerValue[k] || 0) : 0 });
+            });
+        } else {
+            const now = new Date().getTime();
+            poolData.push({ x: now - 3600000, y: currentPool });
+            poolData.push({ x: now, y: currentPool });
+        }
+
+        // Loop
+        uniqueTimeKeys.forEach(timeKey => {
+            const timestamp = new Date(timeKey).getTime();
+            const transInHour = salesByTime[timeKey];
+
+            transInHour.forEach(t => {
+                const amt = t.amount || 0;
+
+                if (t.type === 'DEPOSIT') {
+                    theoreticalPool += amt;
+                    if (showNetBalance && t.partnerId) runningPartnerValue[t.partnerId] += amt;
+                } else if (t.type === 'WITHDRAWAL') {
+                    theoreticalPool -= amt;
+                    if (showNetBalance && t.partnerId) runningPartnerValue[t.partnerId] -= amt;
+                } else {
+                    // VENTA
+                    theoreticalPool -= amt;
+                    if (showNetBalance) {
+                        if (t.partnerId) runningPartnerValue[t.partnerId] -= amt;
+                    } else {
+                        const entityId = t.partnerId ? t.partnerId : 'global';
+                        if (runningPartnerValue[entityId] !== undefined) runningPartnerValue[entityId] += amt;
+                        if (t.type === 'global') runningPartnerValue['global'] += amt;
+                    }
+                }
+            });
+
+            // Registrar Puntos
+            poolData.push({ x: timestamp, y: theoreticalPool });
+            Object.keys(partnerSeriesMap).forEach(key => {
+                partnerSeriesMap[key].data.push({ x: timestamp, y: runningPartnerValue[key] || 0 });
+            });
+        });
+
+        // Punto Final
+        const now = new Date().getTime();
+        if (uniqueTimeKeys.length > 0 && uniqueTimeKeys[uniqueTimeKeys.length - 1] !== now) {
+            poolData.push({ x: now, y: currentPool });
+            Object.keys(partnerSeriesMap).forEach(key => {
+                partnerSeriesMap[key].data.push({ x: now, y: runningPartnerValue[key] || 0 });
+            });
+        }
+
+
+        // --- C. Filtrado ---
+        const finalSeries = [];
+
+        // Pool Total
+        finalSeries.push({ name: 'Total Pool Coins', type: 'area', data: poolData, color: '#00f2ff' });
+
+        // Filtros
+        Object.keys(partnerSeriesMap).forEach(key => {
+            if (filterPartner !== 'all' && key != filterPartner) return;
+            if (filterPartner !== 'all' && key === 'global') return;
+
+            if (partnerSeriesMap[key].data.length > 0) finalSeries.push(partnerSeriesMap[key]);
+        });
+
+        window.mainChartInstance.updateOptions({
+            chart: { type: 'area', stacked: false },
+            yaxis: [
+                {
+                    title: { text: 'Pool Coins Total', style: { color: '#00f2ff' } },
+                    labels: { style: { colors: '#00f2ff' }, formatter: (val) => new Intl.NumberFormat('en-US', { notation: "compact", compactDisplay: "short" }).format(val) },
+                    forceNiceScale: true,
+                    decimalsInFloat: 0
+                },
+                {
+                    opposite: true,
+                    title: { text: showNetBalance ? 'Balance Invertido' : 'Ventas Acumuladas', style: { color: '#ffff00' } },
+                    labels: { style: { colors: '#ffff00' } }
+                }
+            ]
+        });
+
+        window.mainChartInstance.updateSeries(finalSeries);
+    }
+    updateGlobalKPIs();
+}
+
+// --- OVERRIDE: Actualización para Historial Universal y Filtros ---
+window.syncChart = function () {
+    // 1. Actualizar Gráfico de Simulación
+    const simData = window.runSimulation ? window.runSimulation() : { seriesData: [], baselineData: [] };
+
+    if (window.simChartInstance) {
+        window.simChartInstance.updateSeries([
+            { name: 'Portafolio Proyectado', data: simData.seriesData },
+            { name: 'Inversión Total', data: simData.baselineData }
+        ]);
+    }
+
+    // 2. Actualizar Gráfico Principal (Mercado Real - Lógica Acumulativa + Filtros)
+    if (window.mainChartInstance) {
+
+        // --- A. Preparación y Filtros ---
+        const filterType = document.getElementById('chart-filter-type')?.value || 'all';
+        const filterPartner = document.getElementById('chart-filter-partner')?.value || 'all';
+
+        const currentPool = getTotalCoins();
+
+        const allTransactions = [...sales]
+            .filter(s => s.date && !isNaN(new Date(s.date).getTime()))
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Datos para cálculo histórico Base (Pool Total Real)
+        let totalDeposits = 0;
+        let totalWithdrawals = 0;
+        let totalSales = 0;
+
+        allTransactions.forEach(t => {
+            const amt = t.amount || 0;
+            if (t.type === 'DEPOSIT') totalDeposits += amt;
+            else if (t.type === 'WITHDRAWAL') totalWithdrawals += amt;
+            else totalSales += amt;
+        });
+
+        // Pool Inicial Teórico
+        let theoreticalPool = currentPool - totalDeposits + totalWithdrawals + totalSales;
+
+        // --- Series Data Containers ---
+        const poolData = [];
+        const partnerSeriesMap = {};
+
+        // Inicializar Series
+        partnerSeriesMap['global'] = { name: 'Ventas Globales', type: 'area', data: [], color: '#ff00ff' };
+
+        if (config.partners) {
+            const colors = ['#fbbf24', '#22c55e', '#a855f7', '#f97316', '#3b82f6'];
+            config.partners.forEach((p, index) => {
+                partnerSeriesMap[p.id] = {
+                    name: p.name,
+                    type: 'area',
+                    data: [],
+                    color: colors[index % colors.length]
+                };
+            });
+        }
+
+        const showNetBalance = (filterType === 'all');
+        const runningPartnerValue = { 'global': 0 };
+        config.partners.forEach(p => runningPartnerValue[p.id] = 0);
+
+        if (showNetBalance) {
+            config.partners.forEach(p => {
+                let pDeposits = 0;
+                let pWithdrawals = 0;
+                let pSales = 0;
+                allTransactions.forEach(t => {
+                    if (t.partnerId == p.id) {
+                        if (t.type === 'DEPOSIT') pDeposits += (t.amount || 0);
+                        else if (t.type === 'WITHDRAWAL') pWithdrawals += (t.amount || 0);
+                        else pSales += (t.amount || 0);
+                    }
+                });
+                const startBal = (p.coinsInvested || 0) - pDeposits + pWithdrawals + pSales;
+                runningPartnerValue[p.id] = startBal;
+            });
+        }
+
+        // --- B. Iteración Temporal ---
+        const salesByTime = {};
+        allTransactions.forEach(s => {
+            const timeKey = new Date(s.date).toISOString().slice(0, 13) + ':00:00Z';
+            if (!salesByTime[timeKey]) salesByTime[timeKey] = [];
+            salesByTime[timeKey].push(s);
+        });
+
+        const uniqueTimeKeys = Object.keys(salesByTime).sort((a, b) => new Date(a) - new Date(b));
+
+        // Punto Inicial
+        if (uniqueTimeKeys.length > 0) {
+            const firstTime = new Date(uniqueTimeKeys[0]).getTime() - 3600000;
+            poolData.push({ x: firstTime, y: theoreticalPool });
+            Object.keys(partnerSeriesMap).forEach(k => {
+                partnerSeriesMap[k].data.push({ x: firstTime, y: showNetBalance ? (runningPartnerValue[k] || 0) : 0 });
+            });
+        } else {
+            const now = new Date().getTime();
+            poolData.push({ x: now - 3600000, y: currentPool });
+            poolData.push({ x: now, y: currentPool });
+        }
+
+        // Loop
+        uniqueTimeKeys.forEach(timeKey => {
+            const timestamp = new Date(timeKey).getTime();
+            const transInHour = salesByTime[timeKey];
+
+            transInHour.forEach(t => {
+                const amt = t.amount || 0;
+
+                if (t.type === 'DEPOSIT') {
+                    theoreticalPool += amt;
+                    if (showNetBalance && t.partnerId) runningPartnerValue[t.partnerId] += amt;
+                } else if (t.type === 'WITHDRAWAL') {
+                    theoreticalPool -= amt;
+                    if (showNetBalance && t.partnerId) runningPartnerValue[t.partnerId] -= amt;
+                } else {
+                    // VENTA
+                    theoreticalPool -= amt;
+                    if (showNetBalance) {
+                        if (t.partnerId) runningPartnerValue[t.partnerId] -= amt;
+                    } else {
+                        const entityId = t.partnerId ? t.partnerId : 'global';
+                        if (runningPartnerValue[entityId] !== undefined) runningPartnerValue[entityId] += amt;
+                        if (t.type === 'global') runningPartnerValue['global'] += amt;
+                    }
+                }
+            });
+
+            // Registrar Puntos
+            poolData.push({ x: timestamp, y: theoreticalPool });
+            Object.keys(partnerSeriesMap).forEach(key => {
+                partnerSeriesMap[key].data.push({ x: timestamp, y: runningPartnerValue[key] || 0 });
+            });
+        });
+
+        // Punto Final
+        const now = new Date().getTime();
+        if (uniqueTimeKeys.length > 0 && uniqueTimeKeys[uniqueTimeKeys.length - 1] !== now) {
+            poolData.push({ x: now, y: currentPool });
+            Object.keys(partnerSeriesMap).forEach(key => {
+                partnerSeriesMap[key].data.push({ x: now, y: runningPartnerValue[key] || 0 });
+            });
+        }
+
+
+        // --- C. Filtrado ---
+        const finalSeries = [];
+
+        // Pool Total
+        finalSeries.push({ name: 'Total Pool Coins', type: 'area', data: poolData, color: '#00f2ff' });
+
+        // Filtros
+        Object.keys(partnerSeriesMap).forEach(key => {
+            if (filterPartner !== 'all' && key != filterPartner) return;
+            if (filterPartner !== 'all' && key === 'global') return;
+
+            if (partnerSeriesMap[key].data.length > 0) finalSeries.push(partnerSeriesMap[key]);
+        });
+
+        window.mainChartInstance.updateOptions({
+            chart: { type: 'area', stacked: false },
+            yaxis: [
+                {
+                    title: { text: 'Pool Coins Total', style: { color: '#00f2ff' } },
+                    labels: { style: { colors: '#00f2ff' }, formatter: (val) => new Intl.NumberFormat('en-US', { notation: "compact", compactDisplay: "short" }).format(val) },
+                    forceNiceScale: true,
+                    decimalsInFloat: 0
+                },
+                {
+                    opposite: true,
+                    title: { text: showNetBalance ? 'Balance Invertido' : 'Ventas Acumuladas', style: { color: '#ffff00' } },
+                    labels: { style: { colors: '#ffff00' } }
+                }
+            ]
+        });
+
+        window.mainChartInstance.updateSeries(finalSeries);
+    }
+    updateGlobalKPIs();
+}
+
+// --- OVERRIDE: Actualización para Historial Universal y Filtros ---
+// Reemplazamos la función syncChart anterior para incluir la lógica de depósitos/retiros y filtros
+window.syncChart = function () {
+    // 1. Actualizar Gráfico de Simulación
+    const simData = window.runSimulation ? window.runSimulation() : { seriesData: [], baselineData: [] };
+
+    if (window.simChartInstance) {
+        window.simChartInstance.updateSeries([
+            { name: 'Portafolio Proyectado', data: simData.seriesData },
+            { name: 'Inversión Total', data: simData.baselineData }
+        ]);
+    }
+
+    // 2. Actualizar Gráfico Principal (Mercado Real - Lógica Acumulativa + Filtros)
+    if (window.mainChartInstance) {
+
+        // --- A. Preparación y Filtros ---
+        const filterType = document.getElementById('chart-filter-type')?.value || 'all';
+        const filterPartner = document.getElementById('chart-filter-partner')?.value || 'all';
+
+        const currentPool = getTotalCoins();
+
+        const allTransactions = [...sales]
+            .filter(s => s.date && !isNaN(new Date(s.date).getTime()))
+            .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Datos para cálculo histórico Base (Pool Total Real)
+        let totalDeposits = 0;
+        let totalWithdrawals = 0;
+        let totalSales = 0;
+
+        allTransactions.forEach(t => {
+            const amt = t.amount || 0;
+            if (t.type === 'DEPOSIT') totalDeposits += amt;
+            else if (t.type === 'WITHDRAWAL') totalWithdrawals += amt;
+            else totalSales += amt;
+        });
+
+        // Pool Inicial Teórico (t=0 antes de cualquier registro conocido)
+        let theoreticalPool = currentPool - totalDeposits + totalWithdrawals + totalSales;
+
+        // --- Series Data Containers ---
+        const poolData = [];
+        const partnerSeriesMap = {};
+
+        // Inicializar Series
+        partnerSeriesMap['global'] = { name: 'Ventas Globales', type: 'area', data: [], color: '#ff00ff' };
+
+        if (config.partners) {
+            const colors = ['#fbbf24', '#22c55e', '#a855f7', '#f97316', '#3b82f6'];
+            config.partners.forEach((p, index) => {
+                partnerSeriesMap[p.id] = {
+                    name: p.name,
+                    type: 'area',
+                    data: [],
+                    color: colors[index % colors.length]
+                };
+            });
+        }
+
+        const showNetBalance = (filterType === 'all');
+        const runningPartnerValue = { 'global': 0 };
+        config.partners.forEach(p => runningPartnerValue[p.id] = 0);
+
+        // Reconstruir balance inicial si es modo 'all' de socios
+        if (showNetBalance) {
+            config.partners.forEach(p => {
+                let pDeposits = 0;
+                let pWithdrawals = 0;
+                let pSales = 0;
+                allTransactions.forEach(t => {
+                    if (t.partnerId == p.id) {
+                        if (t.type === 'DEPOSIT') pDeposits += (t.amount || 0);
+                        else if (t.type === 'WITHDRAWAL') pWithdrawals += (t.amount || 0);
+                        else pSales += (t.amount || 0);
+                    }
+                });
+                const startBal = (p.coinsInvested || 0) - pDeposits + pWithdrawals + pSales;
+                runningPartnerValue[p.id] = startBal;
+            });
+        }
+
+        // --- B. Iteración Temporal (Replay) ---
+        const salesByTime = {};
+        allTransactions.forEach(s => {
+            const timeKey = new Date(s.date).toISOString().slice(0, 13) + ':00:00Z';
+            if (!salesByTime[timeKey]) salesByTime[timeKey] = [];
+            salesByTime[timeKey].push(s);
+        });
+
+        const uniqueTimeKeys = Object.keys(salesByTime).sort((a, b) => new Date(a) - new Date(b));
+
+        // Punto Inicial
+        if (uniqueTimeKeys.length > 0) {
+            const firstTime = new Date(uniqueTimeKeys[0]).getTime() - 3600000;
+            poolData.push({ x: firstTime, y: theoreticalPool });
+            Object.keys(partnerSeriesMap).forEach(k => {
+                partnerSeriesMap[k].data.push({ x: firstTime, y: showNetBalance ? (runningPartnerValue[k] || 0) : 0 });
+            });
+        } else {
+            const now = new Date().getTime();
+            poolData.push({ x: now - 3600000, y: currentPool });
+            poolData.push({ x: now, y: currentPool });
+        }
+
+        // Loop
+        uniqueTimeKeys.forEach(timeKey => {
+            const timestamp = new Date(timeKey).getTime();
+            const transInHour = salesByTime[timeKey];
+
+            transInHour.forEach(t => {
+                const amt = t.amount || 0;
+
+                if (t.type === 'DEPOSIT') {
+                    theoreticalPool += amt;
+                    if (showNetBalance && t.partnerId) runningPartnerValue[t.partnerId] += amt;
+                } else if (t.type === 'WITHDRAWAL') {
+                    theoreticalPool -= amt;
+                    if (showNetBalance && t.partnerId) runningPartnerValue[t.partnerId] -= amt;
+                } else {
+                    // VENTA
+                    theoreticalPool -= amt;
+                    if (showNetBalance) {
+                        if (t.partnerId) runningPartnerValue[t.partnerId] -= amt;
+                    } else {
+                        const entityId = t.partnerId ? t.partnerId : 'global';
+                        if (runningPartnerValue[entityId] !== undefined) runningPartnerValue[entityId] += amt;
+                        if (t.type === 'global') runningPartnerValue['global'] += amt;
+                    }
+                }
+            });
+
+            // Registrar Puntos
+            poolData.push({ x: timestamp, y: theoreticalPool });
+            Object.keys(partnerSeriesMap).forEach(key => {
+                partnerSeriesMap[key].data.push({ x: timestamp, y: runningPartnerValue[key] || 0 });
+            });
+        });
+
+        // Punto Final (Presente)
+        const now = new Date().getTime();
+        if (uniqueTimeKeys.length > 0 && uniqueTimeKeys[uniqueTimeKeys.length - 1] !== now) {
+            poolData.push({ x: now, y: currentPool });
+            Object.keys(partnerSeriesMap).forEach(key => {
+                partnerSeriesMap[key].data.push({ x: now, y: runningPartnerValue[key] || 0 });
+            });
+        }
+
+
+        // --- C. Filtrado de VISUALIZACIÓN ---
+        const finalSeries = [];
+
+        // 1. Pool Total
+        finalSeries.push({ name: 'Total Pool Coins', type: 'area', data: poolData, color: '#00f2ff' });
+
+        // 2. Filtros
+        Object.keys(partnerSeriesMap).forEach(key => {
+            if (filterPartner !== 'all' && key != filterPartner) return;
+            if (filterPartner !== 'all' && key === 'global') return;
+
+            if (partnerSeriesMap[key].data.length > 0) {
+                finalSeries.push(partnerSeriesMap[key]);
+            }
+        });
+
+
+        window.mainChartInstance.updateOptions({
+            chart: { type: 'area', stacked: false },
+            stroke: { curve: 'smooth', width: 2 },
+            fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05, stops: [0, 100] } },
+            xaxis: {
+                type: 'datetime',
+                labels: {
+                    formatter: function (val) {
+                        if (typeof val === 'number' && val > 1000000000000) {
+                            const d = new Date(val);
+                            return d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }) + ' ' + d.getHours() + ':00h';
+                        }
+                        return val;
+                    },
+                    style: { colors: '#a1a1aa' }
+                }
+            },
+            yaxis: [
+                {
+                    title: { text: 'Pool Coins Total', style: { color: '#00f2ff' } },
+                    labels: { style: { colors: '#00f2ff' }, formatter: (val) => new Intl.NumberFormat('en-US', { notation: "compact" }).format(val) },
+                    forceNiceScale: true,
+                    decimalsInFloat: 0
+                },
+                {
+                    opposite: true,
+                    title: { text: showNetBalance ? 'Balance Invertido' : 'Ventas Acumuladas', style: { color: '#ffff00' } },
+                    labels: { style: { colors: '#ffff00' } }
+                }
+            ]
+        });
+
+        window.mainChartInstance.updateSeries(finalSeries);
+    }
+
+    updateGlobalKPIs();
+}
+
+// =================================================================
+//  SMART MESSAGE CONSOLE V3 LOGIC
+// =================================================================
+
+// --- 0. TEMPLATE CONFIGURATION (UNIFIED) ---
+const DEFAULT_SMART_TEMPLATE = `💎 🔥 COINS DISPONIBLES 🔥 💎
+
+📦 STOCK TOTAL: {stock_total} ({stock_k}k) Coins 
+📉 TASA BASE: (\${tasa} x 1k)
+
+
+🛒 LISTA DE PAQUETES DISPONIBLES 
+  
+{lista_paquetes}
+
+💳 FORMA DE PAGO: 
+🔸 Binance Pay (USDT) 
+✅ Entrega Inmediata`;
+
+// --- 1. DISCOUNT MANAGEMENT ---
+
+function addDiscount() {
+    const name = els.newDiscountName.value.trim();
+    const val = parseFloat(els.newDiscountVal.value);
+
+    if (!name || isNaN(val) || val <= 0 || val > 100) {
+        alert("Por favor ingresa un nombre y un porcentaje válido (1-100).");
+        return;
+    }
+
+    const newId = config.customDiscounts.length > 0 ? Math.max(...config.customDiscounts.map(d => d.id)) + 1 : 1;
+
+    config.customDiscounts.push({
+        id: newId,
+        label: name,
+        value: val
+    });
+
+    renderDiscountSelect();
+
+    // Select the new discount
+    els.genDiscountSelect.value = newId;
+    config.activeDiscountId = newId;
+
+    // Clear inputs
+    els.newDiscountName.value = '';
+    els.newDiscountVal.value = '';
+
+    updateMessagePreview();
+}
+
+function renderDiscountSelect() {
+    const select = els.genDiscountSelect;
+    if (!select) return;
+
+    const currentVal = parseInt(select.value) || 0;
+
+    select.innerHTML = '<option value="0">Sin Descuento Extra</option>';
+
+    config.customDiscounts.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.id;
+        opt.textContent = `${d.label} (-${d.value}%)`;
+        select.appendChild(opt);
+    });
+
+    if (config.customDiscounts.some(d => d.id === currentVal)) {
+        select.value = currentVal;
+    } else {
+        select.value = 0;
+    }
+}
+
+
+// --- 2. PACKAGE MANAGEMENT ---
+
+async function addPackage() {
+    const amount = parseInt(els.newPkgAmount.value);
+
+    if (isNaN(amount) || amount <= 0) {
+        alert("Cantidad inválida");
+        return;
+    }
+
+    if (config.packages.includes(amount)) {
+        alert("Este paquete ya existe.");
+        return;
+    }
+
+    // Insert into Supabase
+    try {
+        const { error } = await window.supabaseClient.from('packages').insert([{ amount }]);
+
+        if (error) {
+            console.error("Error inserting package:", error);
+            alert("Error guardando el paquete en la nube.");
+            return;
+        }
+
+        // Success: Reload from DB
+        const { data: refreshed } = await supabaseClient.from('packages').select('*').order('amount');
+        if (refreshed) {
+            config.packages = refreshed.map(p => Number(p.amount)).filter(n => Number.isFinite(n));
+            renderPackagesList();
+            updateMessagePreview();
+        }
+        els.newPkgAmount.value = '';
+
+    } catch (err) {
+        console.error("Exception adding package:", err);
+    }
+}
+
+function renderPackagesList() {
+    // Deprecated for main dashboard
+}
+
+async function removePackage(amount) {
+    if (!confirm(`¿Eliminar paquete de ${amount}k?`)) return;
+
+    try {
+        const { error } = await window.supabaseClient.from('packages').delete().eq('amount', amount);
+
+        if (error) {
+            console.error("Error deleting package:", error);
+            alert("Error eliminando de la nube.");
+            return;
+        }
+
+        config.packages = config.packages.filter(p => p !== amount);
+        renderPackagesList();
+        updateMessagePreview();
+
+    } catch (err) {
+        console.error("Exception deleting package:", err);
+    }
+}
+
+
+// --- 3. PRICING & GENERATOR ENGINE ---
+
+let templateSaveTimeout = null; // Debounce timer
+
+function getCalculatedPrice(amount) {
+    const baseRate = parseFloat(config.marketPrice) || 0.63; // Fallback to default
+    const activeId = parseInt(els.genDiscountSelect.value) || 0;
+    const isDiscountActive = els.genToggle.checked;
+
+    const discountObj = config.customDiscounts.find(d => d.id === activeId);
+    const discountPercent = (isDiscountActive && discountObj) ? discountObj.value : 0;
+
+    let rawPrice = (amount / 1000) * baseRate * (1 - (discountPercent / 100));
+
+    if (isNaN(rawPrice)) rawPrice = 0;
+
+    // Formula: REDONDEAR.MAS( ... ; 2) -> Math.ceil(val * 100) / 100
+    return (Math.ceil(rawPrice * 100) / 100).toFixed(2);
+}
+
+function updateMessagePreview() {
+    const checkboxes = document.querySelectorAll('.pkg-checkbox:checked');
+    const selectedPackages = Array.from(checkboxes).map(cb => parseInt(cb.value)).sort((a, b) => a - b);
+
+    // Update individual package price labels in the list
+    const allPkgCheckboxes = document.querySelectorAll('.pkg-checkbox');
+    allPkgCheckboxes.forEach(cb => {
+        const val = parseInt(cb.value);
+        const priceLabel = document.getElementById(`pkg-price-${val}`);
+        if (priceLabel) {
+            priceLabel.textContent = `$${getCalculatedPrice(val * 1000)} USDT`;
+        }
+    });
+
+    const tMaster = document.getElementById('smart-tpl-master');
+    let rawTemplate = tMaster ? tMaster.value : DEFAULT_SMART_TEMPLATE;
+
+    if (!rawTemplate || rawTemplate.trim() === '') {
+        rawTemplate = DEFAULT_SMART_TEMPLATE;
+    }
+
+    // --- SAVE TO SUPABASE (Debounced) ---
+    // We update the local config immediately for UI consistency
+    config.template_unified = rawTemplate;
+
+    // Clear previous timeout
+    if (templateSaveTimeout) clearTimeout(templateSaveTimeout);
+
+    // Set new timeout (save after 1 second of inactivity)
+    templateSaveTimeout = setTimeout(async () => {
+        try {
+            const { error } = await window.supabaseClient
+                .from('config')
+                .update({ template_unified: rawTemplate })
+                .eq('id', 1);
+
+            if (error) {
+                console.error("Error saving template to Supabase:", error);
+            } else {
+                console.log("Template saved to Supabase ✅");
+                // Optional: Update localStorage as backup
+                localStorage.setItem('smartTemplateUnified', rawTemplate);
+            }
+        } catch (err) {
+            console.error("Exception saving template:", err);
+        }
+    }, 1000);
+
+    // Update Preview Logic...
+
+    // Prepare Data
+    const stockTotal = config.partners.reduce((sum, p) => sum + (p.coinsInvested || 0), 0) + (config.currencies?.coins || 0); // Approx
+    const stockK = Math.floor(stockTotal / 1000);
+    const baseRate = config.marketPrice;
+
+    // Generate Package List String
+    let packagesStr = "";
+    if (selectedPackages.length === 0) {
+        packagesStr = "    (Selecciona paquetes de la lista...)";
+    } else {
+        packagesStr = selectedPackages.map(pkg => {
+            const price = getCalculatedPrice(pkg * 1000);
+            return `\t💰 ${pkg}k Coins ➜ $${price} USDT`;
+        }).join('\n');
+    }
+
+    // Replace Placeholders
+    let msg = rawTemplate;
+    msg = msg.replace(/{stock_total}/g, new Intl.NumberFormat('es-ES').format(stockTotal));
+    msg = msg.replace(/{stock_k}/g, stockK);
+    msg = msg.replace(/{tasa}/g, baseRate);
+    msg = msg.replace(/{lista_paquetes}/g, packagesStr);
+
+    if (els.msgOutput) {
+        els.msgOutput.textContent = msg;
+    }
+}
